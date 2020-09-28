@@ -426,13 +426,6 @@ public:
 
     BleUuid UUID() const;
 
-    // Discover all characteristics on this service
-    Vector<BleCharacteristic> discoverAllCharacteristics();
-
-    // Fetch the discovered characteristics on this service
-    Vector<BleCharacteristic> characteristics();
-    bool getCharacteristicByUUID(BleCharacteristic& characteristic, const BleUuid& uuid) const;
-
     BleService& operator=(const BleService& service);
 
     bool operator==(const BleService& service) const;
@@ -468,17 +461,27 @@ public:
     Vector<BleCharacteristic> discoverAllCharacteristics();
     ssize_t discoverAllCharacteristics(BleCharacteristic* characteristics, size_t count);
 
+    // Discover all characteristics of a service
+    Vector<BleCharacteristic> discoverCharacteristicsOfService(const BleService& service);
+
     // Fetch the discovered services on peer device.
-    Vector<BleService> services();
-    size_t services(BleService* services, size_t count);
+    Vector<BleService> services() const;
+    size_t services(BleService* services, size_t count) const;
     bool getServiceByUUID(BleService& service, const BleUuid& uuid) const;
 
     // Fetch the discovered characteristics on peer device.
-    Vector<BleCharacteristic> characteristics();
-    size_t characteristics(BleCharacteristic* characteristics, size_t count);
+    Vector<BleCharacteristic> characteristics() const;
+    size_t characteristics(BleCharacteristic* characteristics, size_t count) const;
     bool getCharacteristicByDescription(BleCharacteristic& characteristic, const char* desc) const;
     bool getCharacteristicByDescription(BleCharacteristic& characteristic, const String& desc) const;
     bool getCharacteristicByUUID(BleCharacteristic& characteristic, const BleUuid& uuid) const;
+
+    // Fetch the discovered characteristics under a service.
+    Vector<BleCharacteristic> characteristics(const BleService& service) const;
+    size_t characteristics(const BleService& service, BleCharacteristic* characteristics, size_t count) const;
+    bool getCharacteristicByDescription(const BleService& service, BleCharacteristic& characteristic, const char* desc) const;
+    bool getCharacteristicByDescription(const BleService& service, BleCharacteristic& characteristic, const String& desc) const;
+    bool getCharacteristicByUUID(const BleService& service, BleCharacteristic& characteristic, const BleUuid& uuid) const;
 
     int connect(const BleAddress& addr, const BleConnectionParams* params, bool automatic = true);
     int connect(const BleAddress& addr, uint16_t interval, uint16_t latency, uint16_t timeout, bool automatic = true);

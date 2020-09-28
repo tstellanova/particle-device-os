@@ -859,8 +859,7 @@ private:
 class BleServiceImpl {
 public:
     BleServiceImpl()
-            : connHandle_(BLE_INVALID_CONN_HANDLE),
-              uuid_(),
+            : uuid_(),
               startHandle_(BLE_INVALID_ATTR_HANDLE),
               endHandle_(BLE_INVALID_ATTR_HANDLE),
               characteristicsDiscovered_(false) {
@@ -885,75 +884,15 @@ public:
         return endHandle_;
     }
 
-    BleConnectionHandle& connHandle() {
-        return connHandle_;
-    }
-
     bool& characteristicsDiscovered() {
         return characteristicsDiscovered_;
     }
 
-    Vector<BleCharacteristic>& characteristics() {
-        return characteristics_;
-    }
-
-    int discoverAllCharacteristics(BleService& service) {
-        LOG(TRACE, "Start discovering characteristics.");
-        hal_ble_svc_t halService;
-        halService.size = sizeof(hal_ble_svc_t);
-        halService.start_handle = service.impl()->startHandle();
-        halService.end_handle = service.impl()->endHandle();
-        CHECK(hal_ble_gatt_client_discover_characteristics(service.impl()->connHandle(), &halService, onCharacteristicsDiscovered, &service, nullptr));
-        for (auto& characteristic : service.impl()->characteristics()) {
-            // Read the user description string if presented.
-            if (characteristic.impl()->attrHandles().user_desc_handle != BLE_INVALID_ATTR_HANDLE) {
-                char desc[BLE_MAX_DESC_LEN] = {};
-                size_t len = hal_ble_gatt_client_read(service.impl()->connHandle(), characteristic.impl()->attrHandles().user_desc_handle, (uint8_t*)desc, sizeof(desc) - 1, nullptr);
-                if (len > 0) {
-                    desc[len] = '\0';
-                    characteristic.impl()->description() = desc;
-                    LOG_DEBUG(TRACE, "User description: %s.", desc);
-                }
-            }
-        }
-        return SYSTEM_ERROR_NONE;
-    }
-
 private:
-    BleConnectionHandle connHandle_; // For peer service
     BleUuid uuid_;
     BleAttributeHandle startHandle_;
     BleAttributeHandle endHandle_;
     bool characteristicsDiscovered_;
-    Vector<BleCharacteristic> characteristics_;
-
-    static void onCharacteristicsDiscovered(const hal_ble_char_discovered_evt_t* event, void* context) {
-        BleService* service = static_cast<BleService*>(context);
-        for (size_t i = 0; i < event->count; i++) {
-            BleCharacteristic characteristic;
-            characteristic.impl()->connHandle() = event->conn_handle;
-            if (event->characteristics[i].properties & BLE_SIG_CHAR_PROP_READ) {
-                characteristic.impl()->properties() |= BleCharacteristicProperty::READ;
-            }
-            if (event->characteristics[i].properties & BLE_SIG_CHAR_PROP_WRITE_WO_RESP) {
-                characteristic.impl()->properties() |= BleCharacteristicProperty::WRITE_WO_RSP;
-            }
-            if (event->characteristics[i].properties & BLE_SIG_CHAR_PROP_WRITE) {
-                characteristic.impl()->properties() |= BleCharacteristicProperty::WRITE;
-            }
-            if (event->characteristics[i].properties & BLE_SIG_CHAR_PROP_NOTIFY) {
-                characteristic.impl()->properties() |= BleCharacteristicProperty::NOTIFY;
-            }
-            if (event->characteristics[i].properties & BLE_SIG_CHAR_PROP_INDICATE) {
-                characteristic.impl()->properties() |= BleCharacteristicProperty::INDICATE;
-            }
-            characteristic.impl()->charUUID() = event->characteristics[i].uuid;
-            characteristic.impl()->attrHandles() = event->characteristics[i].charHandles;
-            if (!service->impl()->characteristics().append(characteristic)) {
-                LOG(ERROR, "Failed to append discovered characteristic.");
-            }
-        }
-    }
 };
 
 
@@ -965,8 +904,7 @@ public:
     BlePeerDeviceImpl()
             : connHandle_(BLE_INVALID_CONN_HANDLE),
               address_(),
-              servicesDiscovered_(false),
-              characteristicsDiscovered_(false) {
+              servicesDiscovered_(false) {
     }
 
     ~BlePeerDeviceImpl() = default;
@@ -983,10 +921,6 @@ public:
         return servicesDiscovered_;
     }
 
-    bool& characteristicsDiscovered() {
-        return characteristicsDiscovered_;
-    }
-
     Vector<BleService>& services() {
         return services_;
     }
@@ -995,22 +929,30 @@ public:
         return characteristics_;
     }
 
+    bool locateService(BleService& service, BleCharacteristicHandles handles) {
+        for (const auto& svc : services_) {
+            if (handles.value_handle <= svc.impl()->endHandle() && handles.value_handle >= svc.impl()->startHandle()) {
+                service = svc;
+                return true;
+            }
+        }
+        return false;
+    }
+
     void onDisconnected() {
         connHandle_ = BLE_INVALID_CONN_HANDLE;
-        for (auto& characteristic : characteristics_) {
+        for (auto& characteristic : characteristics()) {
             characteristic.impl()->connHandle() = BLE_INVALID_CONN_HANDLE;
         }
         services_.clear();
         characteristics_.clear();
         servicesDiscovered_ = false;
-        characteristicsDiscovered_ = false;
     }
 
 private:
     BleConnectionHandle connHandle_;
     BleAddress address_;
     bool servicesDiscovered_;
-    bool characteristicsDiscovered_;
     Vector<BleService> services_;
     Vector<BleCharacteristic> characteristics_;
 };
@@ -1331,29 +1273,6 @@ BleUuid BleService::UUID() const {
     return impl()->UUID();
 }
 
-Vector<BleCharacteristic> BleService::discoverAllCharacteristics() {
-    if (!impl()->characteristicsDiscovered()) {
-        if (impl()->discoverAllCharacteristics(*this) == SYSTEM_ERROR_NONE) {
-            impl()->characteristicsDiscovered() = true;
-        }
-    }
-    return characteristics();
-}
-
-Vector<BleCharacteristic> BleService::characteristics() {
-    return impl()->characteristics();
-}
-
-bool BleService::getCharacteristicByUUID(BleCharacteristic& characteristic, const BleUuid& uuid) const {
-    for (auto& existChar : impl()->characteristics()) {
-        if (existChar.UUID() == uuid) {
-            characteristic = existChar;
-            return true;
-        }
-    }
-    return false;
-}
-
 BleService& BleService::operator=(const BleService& service) {
     impl_ = service.impl_;
     return *this;
@@ -1369,26 +1288,18 @@ public:
     BleDiscoveryDelegator() = default;
     ~BleDiscoveryDelegator() = default;
 
-    int discoverAllServiceAndCharacteristics(BlePeerDevice& peer) {
-        CHECK(discoverAllServices(peer));
-        CHECK(discoverAllCharacteristics(peer));
-        return SYSTEM_ERROR_NONE;
-    }
-
     int discoverAllServices(BlePeerDevice& peer) {
         LOG(TRACE, "Start discovering services.");
         return hal_ble_gatt_client_discover_all_services(peer.impl()->connHandle(), onServicesDiscovered, &peer, nullptr);
     }
 
-    int discoverAllCharacteristics(BlePeerDevice& peer) {
-        LOG(TRACE, "Start discovering characteristics.");
-        for (auto& service : peer.impl()->services()) {
-            hal_ble_svc_t halService;
-            halService.size = sizeof(hal_ble_svc_t);
-            halService.start_handle = service.impl()->startHandle();
-            halService.end_handle = service.impl()->endHandle();
-            CHECK(hal_ble_gatt_client_discover_characteristics(peer.impl()->connHandle(), &halService, onCharacteristicsDiscovered, &peer, nullptr));
-        }
+    int discoverCharacteristics(const BlePeerDevice& peer, const BleService& service) const {
+        LOG(TRACE, "Start discovering characteristics of service: %s.", service.impl()->UUID().toString().c_str());
+        hal_ble_svc_t halService;
+        halService.size = sizeof(hal_ble_svc_t);
+        halService.start_handle = service.impl()->startHandle();
+        halService.end_handle = service.impl()->endHandle();
+        CHECK(hal_ble_gatt_client_discover_characteristics(peer.impl()->connHandle(), &halService, onCharacteristicsDiscovered, peer.impl(), nullptr));
         for (auto& characteristic : peer.impl()->characteristics()) {
             // Read the user description string if presented.
             if (characteristic.impl()->attrHandles().user_desc_handle != BLE_INVALID_ATTR_HANDLE) {
@@ -1415,7 +1326,6 @@ private:
         BlePeerDevice* peer = static_cast<BlePeerDevice*>(context);
         for (size_t i = 0; i < event->count; i++) {
             BleService service;
-            service.impl()->connHandle() = event->conn_handle;
             service.impl()->UUID() = event->services[i].uuid;
             service.impl()->startHandle() = event->services[i].start_handle;
             service.impl()->endHandle() = event->services[i].end_handle;
@@ -1432,29 +1342,35 @@ private:
      * APIs those are invoked here must not acquire the BLE HAL lock.
      */
     static void onCharacteristicsDiscovered(const hal_ble_char_discovered_evt_t* event, void* context) {
-        BlePeerDevice* peer = static_cast<BlePeerDevice*>(context);
+        BlePeerDeviceImpl* peerImpl = static_cast<BlePeerDeviceImpl*>(context);
         for (size_t i = 0; i < event->count; i++) {
             BleCharacteristic characteristic;
-            characteristic.impl()->connHandle() = event->conn_handle;
-            if (event->characteristics[i].properties & BLE_SIG_CHAR_PROP_READ) {
-                characteristic.impl()->properties() |= BleCharacteristicProperty::READ;
-            }
-            if (event->characteristics[i].properties & BLE_SIG_CHAR_PROP_WRITE_WO_RESP) {
-                characteristic.impl()->properties() |= BleCharacteristicProperty::WRITE_WO_RSP;
-            }
-            if (event->characteristics[i].properties & BLE_SIG_CHAR_PROP_WRITE) {
-                characteristic.impl()->properties() |= BleCharacteristicProperty::WRITE;
-            }
-            if (event->characteristics[i].properties & BLE_SIG_CHAR_PROP_NOTIFY) {
-                characteristic.impl()->properties() |= BleCharacteristicProperty::NOTIFY;
-            }
-            if (event->characteristics[i].properties & BLE_SIG_CHAR_PROP_INDICATE) {
-                characteristic.impl()->properties() |= BleCharacteristicProperty::INDICATE;
-            }
-            characteristic.impl()->charUUID() = event->characteristics[i].uuid;
+            BleService service;
             characteristic.impl()->attrHandles() = event->characteristics[i].charHandles;
-            if (!peer->impl()->characteristics().append(characteristic)) {
-                LOG(ERROR, "Failed to append discovered characteristic.");
+            if (peerImpl->locateService(service, characteristic.impl()->attrHandles())) {
+                characteristic.impl()->svcUUID() = service.impl()->UUID();
+                characteristic.impl()->connHandle() = event->conn_handle;
+                if (event->characteristics[i].properties & BLE_SIG_CHAR_PROP_READ) {
+                    characteristic.impl()->properties() |= BleCharacteristicProperty::READ;
+                }
+                if (event->characteristics[i].properties & BLE_SIG_CHAR_PROP_WRITE_WO_RESP) {
+                    characteristic.impl()->properties() |= BleCharacteristicProperty::WRITE_WO_RSP;
+                }
+                if (event->characteristics[i].properties & BLE_SIG_CHAR_PROP_WRITE) {
+                    characteristic.impl()->properties() |= BleCharacteristicProperty::WRITE;
+                }
+                if (event->characteristics[i].properties & BLE_SIG_CHAR_PROP_NOTIFY) {
+                    characteristic.impl()->properties() |= BleCharacteristicProperty::NOTIFY;
+                }
+                if (event->characteristics[i].properties & BLE_SIG_CHAR_PROP_INDICATE) {
+                    characteristic.impl()->properties() |= BleCharacteristicProperty::INDICATE;
+                }
+                characteristic.impl()->charUUID() = event->characteristics[i].uuid;
+                if (!peerImpl->characteristics().append(characteristic)) {
+                    LOG(ERROR, "Failed to append discovered characteristic.");
+                }
+            } else {
+                LOG(ERROR, "Discovered characteristic's handle is invalid.");
             }
         }
     }
@@ -1504,33 +1420,36 @@ Vector<BleCharacteristic> BlePeerDevice::discoverAllCharacteristics() {
     if (!impl()->servicesDiscovered()) {
         discoverAllServices();
     }
-    if (!impl()->characteristicsDiscovered()) {
-        BleDiscoveryDelegator discovery;
-        if (discovery.discoverAllCharacteristics(*this) == SYSTEM_ERROR_NONE) {
-            impl()->characteristicsDiscovered() = true;
-        }
+    for (const auto& service : impl()->services()) {
+        discoverCharacteristicsOfService(service);
     }
     return characteristics();
 }
 
 ssize_t BlePeerDevice::discoverAllCharacteristics(BleCharacteristic* chars, size_t count) {
     CHECK_TRUE(chars && count > 0, SYSTEM_ERROR_INVALID_ARGUMENT);
-    if (!impl()->servicesDiscovered()) {
-        discoverAllServices();
-    }
-    if (!impl()->characteristicsDiscovered()) {
-        BleDiscoveryDelegator discovery;
-        CHECK(discovery.discoverAllCharacteristics(*this));
-        impl()->characteristicsDiscovered() = true;
-    }
+    discoverAllCharacteristics();
     return characteristics(chars, count);
 }
 
-Vector<BleService> BlePeerDevice::services() {
+Vector<BleCharacteristic> BlePeerDevice::discoverCharacteristicsOfService(const BleService& service) {
+    if (!impl()->servicesDiscovered()) {
+        return Vector<BleCharacteristic>();
+    }
+    if (!service.impl()->characteristicsDiscovered()) {
+        BleDiscoveryDelegator discovery;
+        if (discovery.discoverCharacteristics(*this, service) == SYSTEM_ERROR_NONE) {
+            service.impl()->characteristicsDiscovered() = true;
+        }
+    }
+    return characteristics(service);
+}
+
+Vector<BleService> BlePeerDevice::services() const {
     return impl()->services();
 }
 
-size_t BlePeerDevice::services(BleService* svcs, size_t count) {
+size_t BlePeerDevice::services(BleService* svcs, size_t count) const {
     CHECK_TRUE(svcs && count > 0, SYSTEM_ERROR_INVALID_ARGUMENT);
     count = std::min((int)count, impl()->services().size());
     for (size_t i = 0; i < count; i++) {
@@ -1549,15 +1468,35 @@ bool BlePeerDevice::getServiceByUUID(BleService& service, const BleUuid& uuid) c
     return false;
 }
 
-Vector<BleCharacteristic> BlePeerDevice::characteristics() {
+Vector<BleCharacteristic> BlePeerDevice::characteristics() const {
     return impl()->characteristics();
 }
 
-size_t BlePeerDevice::characteristics(BleCharacteristic* chars, size_t count) {
-    CHECK_TRUE(chars && count > 0, SYSTEM_ERROR_INVALID_ARGUMENT);
+Vector<BleCharacteristic> BlePeerDevice::characteristics(const BleService& service) const {
+    Vector<BleCharacteristic> characteristics;
+    for (const auto& characteristic : impl()->characteristics()) {
+        if (characteristic.impl()->svcUUID() == service.impl()->UUID()) {
+            characteristics.append(characteristic);
+        }
+    }
+    return characteristics;
+}
+
+size_t BlePeerDevice::characteristics(BleCharacteristic* characteristics, size_t count) const {
+    CHECK_TRUE(characteristics && count > 0, SYSTEM_ERROR_INVALID_ARGUMENT);
     count = std::min((int)count, impl()->characteristics().size());
     for (size_t i = 0; i < count; i++) {
-        chars[i] = impl()->characteristics()[i];
+        characteristics[i] = impl()->characteristics()[i];
+    }
+    return count;
+}
+
+size_t BlePeerDevice::characteristics(const BleService& service, BleCharacteristic* characteristics, size_t count) const {
+    CHECK_TRUE(characteristics && count > 0, SYSTEM_ERROR_INVALID_ARGUMENT);
+    Vector<BleCharacteristic> chars = this->characteristics(service);
+    count = std::min((int)count, chars.size());
+    for (size_t i = 0; i < count; i++) {
+        characteristics[i] = chars[i];
     }
     return count;
 }
@@ -1580,6 +1519,31 @@ bool BlePeerDevice::getCharacteristicByDescription(BleCharacteristic& characteri
 bool BlePeerDevice::getCharacteristicByUUID(BleCharacteristic& characteristic, const BleUuid& uuid) const {
     for (auto& existChar : impl()->characteristics()) {
         if (existChar.UUID() == uuid) {
+            characteristic = existChar;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool BlePeerDevice::getCharacteristicByDescription(const BleService& service, BleCharacteristic& characteristic, const char* desc) const {
+    CHECK_TRUE(desc, false);
+    for (auto& existChar : impl()->characteristics()) {
+        if (existChar.impl()->svcUUID() == service.UUID() && !strcmp(existChar.description().c_str(), desc)) {
+            characteristic = existChar;
+            return true;
+        }
+    }
+    return true;
+}
+
+bool BlePeerDevice::getCharacteristicByDescription(const BleService& service, BleCharacteristic& characteristic, const String& desc) const {
+    return getCharacteristicByDescription(service, characteristic, desc.c_str());
+}
+
+bool BlePeerDevice::getCharacteristicByUUID(const BleService& service, BleCharacteristic& characteristic, const BleUuid& uuid) const {
+    for (auto& existChar : impl()->characteristics()) {
+        if (existChar.impl()->svcUUID() == service.UUID() && existChar.UUID() == uuid) {
             characteristic = existChar;
             return true;
         }
