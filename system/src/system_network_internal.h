@@ -208,7 +208,9 @@ struct NetworkInterface
     virtual void setup()=0;
 
     virtual void on()=0;
+    virtual bool isOn()=0;
     virtual void off(bool disconnect_cloud=false)=0;
+    virtual bool isOff()=0;
     virtual void connect(bool listen_enabled=true)=0;
     virtual bool connecting()=0;
     virtual void connect_cancel(bool cancel)=0;
@@ -620,6 +622,24 @@ public:
             diag->status(NetworkDiagnostics::DISCONNECTED);
             system_notify_event(network_status, network_status_on);
         }
+    }
+
+    bool isOn() override
+    {
+#if PLATFORM_ID == PLATFORM_ELECTRON // Electron
+        return !WLAN_INITIALIZED || SPARK_WLAN_STARTED;
+#else
+        return SPARK_WLAN_STARTED;
+#endif
+    }
+
+    bool isOff() override
+    {
+#if PLATFORM_ID == PLATFORM_ELECTRON // Electron
+        return WLAN_INITIALIZED && !SPARK_WLAN_STARTED;
+#else
+        return !SPARK_WLAN_STARTED;
+#endif
     }
 
     void off(bool disconnect_cloud=false) override
