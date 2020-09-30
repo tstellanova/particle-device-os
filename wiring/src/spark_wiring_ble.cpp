@@ -888,11 +888,20 @@ public:
         return characteristicsDiscovered_;
     }
 
+    bool hasCharacteristic(const BleCharacteristic& characteristic) {
+        if ( characteristic.impl()->svcUUID() == uuid_ && 
+              characteristic.impl()->attrHandles().value_handle >= startHandle_ &&
+              characteristic.impl()->attrHandles().value_handle <= endHandle_) {
+            return true;
+        }
+        return false;
+    }
+
 private:
     BleUuid uuid_;
     BleAttributeHandle startHandle_;
     BleAttributeHandle endHandle_;
-    bool characteristicsDiscovered_;
+    bool characteristicsDiscovered_; // For peer service only
 };
 
 
@@ -1445,6 +1454,12 @@ Vector<BleCharacteristic> BlePeerDevice::discoverCharacteristicsOfService(const 
     return characteristics(service);
 }
 
+ssize_t BlePeerDevice::discoverCharacteristicsOfService(const BleService& service, BleCharacteristic* chars, size_t count) {
+    CHECK_TRUE(chars && count > 0, SYSTEM_ERROR_INVALID_ARGUMENT);
+    discoverCharacteristicsOfService(service);
+    return characteristics(service, chars, count);
+}
+
 Vector<BleService> BlePeerDevice::services() const {
     return impl()->services();
 }
@@ -1468,6 +1483,26 @@ bool BlePeerDevice::getServiceByUUID(BleService& service, const BleUuid& uuid) c
     return false;
 }
 
+Vector<BleService> BlePeerDevice::getServiceByUUID(const BleUuid& uuid) const {
+    Vector<BleService> services;
+    for (auto& existSvc : impl()->services()) {
+        if (existSvc.UUID() == uuid) {
+            services.append(existSvc);
+        }
+    }
+    return services;
+}
+
+size_t BlePeerDevice::getServiceByUUID(BleService* svcs, size_t count, const BleUuid& uuid) const {
+    CHECK_TRUE(svcs && count > 0, SYSTEM_ERROR_INVALID_ARGUMENT);
+    Vector<BleService> services = getServiceByUUID(uuid);
+    count = std::min((int)count, services.size());
+    for (size_t i = 0; i < count; i++) {
+        svcs[i] = services[i];
+    }
+    return count;
+}
+
 Vector<BleCharacteristic> BlePeerDevice::characteristics() const {
     return impl()->characteristics();
 }
@@ -1475,7 +1510,7 @@ Vector<BleCharacteristic> BlePeerDevice::characteristics() const {
 Vector<BleCharacteristic> BlePeerDevice::characteristics(const BleService& service) const {
     Vector<BleCharacteristic> characteristics;
     for (const auto& characteristic : impl()->characteristics()) {
-        if (characteristic.impl()->svcUUID() == service.impl()->UUID()) {
+        if (service.impl()->hasCharacteristic(characteristic)) {
             characteristics.append(characteristic);
         }
     }
@@ -1529,7 +1564,7 @@ bool BlePeerDevice::getCharacteristicByUUID(BleCharacteristic& characteristic, c
 bool BlePeerDevice::getCharacteristicByDescription(const BleService& service, BleCharacteristic& characteristic, const char* desc) const {
     CHECK_TRUE(desc, false);
     for (auto& existChar : impl()->characteristics()) {
-        if (existChar.impl()->svcUUID() == service.UUID() && !strcmp(existChar.description().c_str(), desc)) {
+        if (service.impl()->hasCharacteristic(characteristic) && !strcmp(existChar.description().c_str(), desc)) {
             characteristic = existChar;
             return true;
         }
@@ -1543,7 +1578,7 @@ bool BlePeerDevice::getCharacteristicByDescription(const BleService& service, Bl
 
 bool BlePeerDevice::getCharacteristicByUUID(const BleService& service, BleCharacteristic& characteristic, const BleUuid& uuid) const {
     for (auto& existChar : impl()->characteristics()) {
-        if (existChar.impl()->svcUUID() == service.UUID() && existChar.UUID() == uuid) {
+        if (service.impl()->hasCharacteristic(characteristic) && existChar.UUID() == uuid) {
             characteristic = existChar;
             return true;
         }
