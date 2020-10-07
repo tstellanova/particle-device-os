@@ -76,6 +76,7 @@ private:
 #if HAL_PLATFORM_POWER_MANAGEMENT_OPTIONAL
   bool detect_ = false;
 #endif // HAL_PLATFORM_POWER_MANAGEMENT_OPTIONAL
+  system_tick_t pmicWatchdogTimer_ = 0;
 
   hal_power_config config_ = {};
 };

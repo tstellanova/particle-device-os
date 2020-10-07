@@ -41,6 +41,8 @@ constexpr system_tick_t DEFAULT_FAULT_SUPPRESSION_PERIOD = 60000;
 
 constexpr system_tick_t DEFAULT_QUEUE_WAIT = 1000;
 constexpr system_tick_t DEFAULT_WATCHDOG_TIMEOUT = 60000;
+// FIXME: make sure to change setWatchdog() call to use the same interval
+constexpr system_tick_t PMIC_WATCHDOG_INTERVAL = 40000; // 40s
 
 constexpr hal_power_config defaultPowerConfig = {
   .flags = 0,
@@ -136,6 +138,9 @@ void PowerManager::sleep(bool s) {
       // Going into sleep
       if (g_batteryState == BATTERY_STATE_DISCONNECTED) {
         initDefault();
+        PMIC power;
+        // XXX:
+        power.disableWatchdog();
       }
       gauge.sleep();
     } else {
@@ -160,17 +165,17 @@ void PowerManager::handleUpdate() {
   // In order to read the current fault status, the host has to read REG09 two times
   // consecutively. The 1st reads fault register status from the last read and the 2nd
   // reads the current fault register status.
-  const uint8_t lastFault = power.getFault();
+  volatile uint8_t lastFault = power.getFault();
   (void)lastFault;
   const uint8_t curFault = power.getFault();
-  const uint8_t status = power.getSystemStatus();
-  const uint8_t misc = power.readOpControlRegister();
 
-  // Watchdog fault
-  if ((curFault) & 0x80) {
+  // Watchdog fault or buck converter got disabled
+  if ((curFault & 0x80) || !power.isBuckEnabled()) {
     // Restore parameters
     initDefault();
   }
+
+  const uint8_t status = power.getSystemStatus();
 
   battery_state_t state = BATTERY_STATE_UNKNOWN;
 
@@ -248,7 +253,7 @@ void PowerManager::handleUpdate() {
         break;
       case 0x00:
       default:
-        if ((misc & 0x80) == 0x00) {
+        if (!power.isInDPDM()) {
           // Not in DPDM detection anymore
           src = POWER_SOURCE_VIN;
           applyVinConfig();
@@ -308,7 +313,12 @@ void PowerManager::loop(void* arg) {
 #endif
     HAL_Pin_Mode(LOW_BAT_UC, INPUT_PULLUP);
     attachInterrupt(LOW_BAT_UC, &PowerManager::isrHandler, FALLING);
+    PMIC power(true);
+    power.begin();
     self->initDefault();
+    // Clear old fault register state
+    power.getFault();
+    power.getFault();
     FuelGauge fuel(true);
     fuel.wakeup();
     fuel.setAlertThreshold(20); // Low Battery alert at 10% (about 3.6V)
@@ -351,9 +361,11 @@ void PowerManager::isrHandler() {
 
 void PowerManager::initDefault(bool dpdm) {
   PMIC power(true);
-  power.begin();
   // Enters host-managed mode
-  power.disableWatchdog();
+  // We keep the watchdog running at 40s and make sure to kick it periodically
+  // FIXME: Make sure to adjust PMIC_WATCHDOG_INTERVAL accordingly
+  power.resetWatchdog();
+  power.setWatchdog(0b01);
 
   // Adjust charge voltage
   power.setChargeVoltage(config_.termination_voltage);
@@ -361,12 +373,26 @@ void PowerManager::initDefault(bool dpdm) {
   // Set recharge threshold to default value - 100mV
   power.setRechargeThreshold(100);
   power.setChargeCurrent(config_.charge_current);
+
+  // Enable charging
+  power.enableCharging();
+
+  // Enable buck converter
+  if (!power.isBuckEnabled()) {
+    bool inDpDm = power.isInDPDM();
+    power.enableBuck();
+    // Make sure we restart DPDM as otherwise we may get stuck
+    // with an invalid ILIM due to reading back and writing
+    // a transient value by modifying the same register with enableBuck()
+    if (inDpDm) {
+      dpdm = true;
+    }
+  }
+
   if (dpdm) {
     // Force-start input current limit detection
     power.enableDPDM();
   }
-  // Enable charging
-  power.enableCharging();
 
   faultSuppressed_ = 0;
 }
@@ -503,6 +529,12 @@ void PowerManager::checkWatchdog() {
     chargingDisabledTimestamp_ = 0;
     g_batteryState = BATTERY_STATE_UNKNOWN;
     initDefault(false);
+  }
+
+  if (millis() - pmicWatchdogTimer_ >= (PMIC_WATCHDOG_INTERVAL / 2)) {
+    pmicWatchdogTimer_ = millis();
+    PMIC power;
+    power.resetWatchdog();
   }
 }
 
@@ -657,13 +689,15 @@ void PowerManager::logCurrentConfig() {
 
 void PowerManager::applyDefaultConfig(bool dpdm) {
   PMIC power;
-  if (power.getInputVoltageLimit() != DEFAULT_INPUT_VOLTAGE_LIMIT) {
-    power.setInputVoltageLimit(DEFAULT_INPUT_VOLTAGE_LIMIT);
-  }
-  if (dpdm) {
-    // Force-start input current limit detection
-    LOG_DEBUG(TRACE, "Re-running DPDM");
-    power.enableDPDM();
+  if (!power.isInDPDM()) {
+    if (power.getInputVoltageLimit() != DEFAULT_INPUT_VOLTAGE_LIMIT) {
+      power.setInputVoltageLimit(DEFAULT_INPUT_VOLTAGE_LIMIT);
+    }
+    if (dpdm) {
+      // Force-start input current limit detection
+      LOG_DEBUG(TRACE, "Re-running DPDM");
+      power.enableDPDM();
+    }
   }
 }
 

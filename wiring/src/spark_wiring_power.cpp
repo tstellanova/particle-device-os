@@ -367,6 +367,11 @@ bool PMIC::disableBuck(void) {
     return 1;
 }
 
+bool PMIC::isBuckEnabled() {
+    std::lock_guard<PMIC> l(*this);
+    byte DATA = readRegister(INPUT_SOURCE_REGISTER);
+    return !(DATA & 0x80);
+}
 
 /*
 
@@ -908,6 +913,10 @@ byte PMIC::readOpControlRegister(void) {
 
     return readRegister(MISC_CONTROL_REGISTER);
 
+}
+
+bool PMIC::isInDPDM() {
+    return (readOpControlRegister() & 0x80);
 }
 
 uint16_t PMIC::getRechargeThreshold() {

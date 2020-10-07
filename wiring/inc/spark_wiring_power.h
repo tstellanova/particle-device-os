@@ -64,6 +64,7 @@ public:
     byte readInputSourceRegister(void);
     bool enableBuck(void);
     bool disableBuck(void);
+    bool isBuckEnabled();
     bool setInputCurrentLimit(uint16_t current);
     uint16_t getInputCurrentLimit(void);
     bool setInputVoltageLimit(uint16_t voltage);
@@ -118,6 +119,7 @@ public:
     bool enableBATFET(void);
     bool disableBATFET(void);
     bool safetyTimer(); //slow/ normal
+    bool isInDPDM();
 
     bool enableChargeFaultINT();
     bool disableChargeFaultINT();
