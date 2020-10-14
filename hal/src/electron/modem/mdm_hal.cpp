@@ -54,6 +54,8 @@ std::recursive_mutex mdm_mutex;
 #define USO_MAX_WRITE   1024  //!< maximum number of bytes to write to socket (used with TX)
 #define MDM_URC_POLL_INTERVAL_MS (1000) //!< URC poll interval
 #define MDM_SOCKET_SEND_RETRIES_R4_BUG (3)
+#define MDM_RESET_FAILURE_TIMEOUT_MS (10000)
+#define MDM_RESET_FAILURE_MAX_ATTEMPTS (8)
 
 // ID of the PDP context used to configure the default EPS bearer when registering in an LTE network
 // Note: There are no PDP contexts in LTE, SARA-R4 uses this naming for the sake of simplicity
@@ -271,6 +273,8 @@ MDMParser::MDMParser(void)
 #ifdef MDM_DEBUG
     _debugLevel = 3;
 #endif
+    _resetFailureAttempts = 0;
+    _resetFailureTimestamp = 0;
 
     Hal_Pin_Info* pinMap = HAL_Pin_Map();
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOB, ENABLE);
@@ -289,12 +293,16 @@ void MDMParser::setPowerMode(int mode) {
 }
 
 void MDMParser::cancel(void) {
-    MDM_INFO("\r\n[ Modem::cancel ] = = = = = = = = = = = = = = =");
+    if (!_cancel_all_operations) {
+        MDM_INFO("\r\n[ Modem::cancel ] = = = = = = = = = = = = = = =");
+    }
     _cancel_all_operations = true;
 }
 
 void MDMParser::resume(void) {
-    MDM_INFO("\r\n[ Modem::resume ] = = = = = = = = = = = = = = =");
+    if (_cancel_all_operations) {
+        MDM_INFO("\r\n[ Modem::resume ] = = = = = = = = = = = = = = =");
+    }
     _cancel_all_operations = false;
 }
 
@@ -890,11 +898,18 @@ failure:
 bool MDMParser::powerOn(const char* simpin)
 {
     LOCK();
+
     // The modem type won't change that easily
     auto device_type = _dev.dev;
     memset(&_dev, 0, sizeof(_dev));
     _dev.dev = device_type;
     bool retried_after_reset = false;
+
+    if (_resetFailureAttempts > 0) {
+        if (HAL_Timer_Get_Milli_Seconds() - _resetFailureTimestamp < MDM_RESET_FAILURE_TIMEOUT_MS) {
+            goto failure;
+        }
+    }
 
     _error = 0;
 
@@ -972,8 +987,7 @@ failure:
 bool MDMParser::init(DevStatus* status)
 {
     LOCK();
-    static int resetFailureAttempts = 0;
-    MDM_INFO("\r\n[ Modem::init ] = = = = = = = = = = = = = = =");
+    MDM_INFO("\r\n[ Modem::init (attempt %u/%u) ] = = = = = = = = = =", (unsigned)_resetFailureAttempts + 1, (unsigned)MDM_RESET_FAILURE_MAX_ATTEMPTS);
 
     // Define all cstringhelpers up here, because "goto"s do not like bypassing inits
     CStringHelper str_imei(_dev.imei, sizeof(_dev.imei));
@@ -1088,7 +1102,7 @@ bool MDMParser::init(DevStatus* status)
                 p = UBLOX_SARA_UMNOPROF_STANDARD_EUROPE;
             } else {
                 // continue on with init if we are trying to set SIM_SELECT a second time
-                if (resetFailureAttempts >= 1) {
+                if (_resetFailureAttempts >= 1) {
                     LOG(WARN, "UMNOPROF=1 did not resolve a built-in profile, please check if UMNOPROF=100 is required!");
                     continueInit = true;
                 }
@@ -1144,7 +1158,7 @@ bool MDMParser::init(DevStatus* status)
             goto reset_failure;
         }
     } // if (_dev.dev == DEV_SARA_R410)
-    resetFailureAttempts = 0;
+    _resetFailureAttempts = 0;
     return true;
 
 failure:
@@ -1153,16 +1167,15 @@ failure:
 reset_failure:
     // Don't get stuck in a reset-retry loop
     // eDRX disables can take a couple or more resets, UMNOPROF requires 1 or 2 and UBANDMASK requires 1 or 2 worst case
-    if (resetFailureAttempts++ < 8) {
+    if (_resetFailureAttempts++ <= MDM_RESET_FAILURE_MAX_ATTEMPTS) {
         if (_atOk()) {
             sendFormated("AT+CFUN=15,0\r\n");
             waitFinalResp(nullptr, nullptr, CFUN_TIMEOUT);
-            _init = false; // invalidate init and prevent cellular registration
-            _pwr = false;  //   |
             // When this exits false, ARM_WLAN_WD 1 will fire and timeout after 30s.
             // MDMParser::powerOn and MDMParser::init will then be retried by the system.
             _incModemStateChangeCount();
         }
+        _resetFailureTimestamp = HAL_Timer_Get_Milli_Seconds();
     } else {
         // stop resetting, and try to register.
         // Preventing cellular registration gets us back to retrying init() faster,
@@ -1170,9 +1183,9 @@ reset_failure:
         // connect even with an error, since that error is persisting and might just
         // be a fluke or bug in the modem. Allowing to continue on eventually helps
         // the device recover in odd situations we can't predict.
-        resetFailureAttempts = 0;
+        _resetFailureAttempts = 0;
     }
-    return false;
+    return !_resetFailureAttempts;
 }
 
 void MDMParser::_incModemStateChangeCount(void) {
@@ -1211,6 +1224,8 @@ bool MDMParser::powerState(void) const {
 bool MDMParser::powerOff(void)
 {
     LOCK();
+    _resetFailureAttempts = 0;
+    _resetFailureTimestamp = 0;
     bool ok = false;
     bool continue_cancel = false;
     bool check_ri = false;
