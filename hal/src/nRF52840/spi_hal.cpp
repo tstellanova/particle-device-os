@@ -300,12 +300,11 @@ void HAL_SPI_Begin_Ext(HAL_SPI_Interface spi, SPI_Mode mode, uint16_t pin, void*
     }
 
     if (pin == SPI_DEFAULT_SS) {
+        m_spi_map[spi].ss_pin = PIN_INVALID;
         if (spi == HAL_SPI_INTERFACE1) {
             m_spi_map[spi].ss_pin = SS;
         } else if (spi == HAL_SPI_INTERFACE2) {
             m_spi_map[spi].ss_pin = D5;
-        } else {
-            m_spi_map[spi].ss_pin = PIN_INVALID;
         }
     } else {
         m_spi_map[spi].ss_pin = pin;
